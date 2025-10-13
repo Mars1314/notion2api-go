@@ -118,25 +118,16 @@ start_with_docker() {
         echo -e "  查看日志: ${YELLOW}docker-compose logs -f${NC}"
         echo -e "  停止服务: ${YELLOW}docker-compose down${NC}"
         echo ""
-        
-        # 测试服务
-        print_info "测试服务连接..."
-        sleep 3
-        if curl -s "http://localhost:${PORT}/" > /dev/null 2>&1; then
-            print_success "服务响应正常"
-            
-            # 显示支持的模型
-            echo ""
-            echo -e "${BLUE}📋 支持的模型：${NC}"
-            echo -e "  ${GREEN}✓${NC} claude-sonnet-4.5  ${YELLOW}(推荐)${NC}"
-            echo -e "  ${GREEN}✓${NC} gpt-5"
-            echo -e "  ${GREEN}✓${NC} claude-opus-4.1"
-            echo -e "  ${GREEN}✓${NC} gpt-4.1"
-            echo -e "  ${GREEN}✓${NC} gemini-2.5-flash"
-            echo -e "  ${GREEN}✓${NC} gemini-2.5-pro"
-        else
-            print_warning "服务可能还未完全就绪，请稍等片刻"
-        fi
+
+        # 显示支持的模型
+        echo ""
+        echo -e "${BLUE}📋 支持的模型：${NC}"
+        echo -e "  ${GREEN}✓${NC} claude-sonnet-4.5  ${YELLOW}(推荐)${NC}"
+        echo -e "  ${GREEN}✓${NC} gpt-5"
+        echo -e "  ${GREEN}✓${NC} claude-opus-4.1"
+        echo -e "  ${GREEN}✓${NC} gpt-4.1"
+        echo -e "  ${GREEN}✓${NC} gemini-2.5-flash"
+        echo -e "  ${GREEN}✓${NC} gemini-2.5-pro"
     else
         print_error "服务启动失败"
         print_info "查看日志: docker-compose logs"
@@ -181,25 +172,16 @@ start_with_go() {
         echo -e "  日志文件: ${YELLOW}tail -f notion-2api.log${NC}"
         echo -e "  停止服务: ${YELLOW}pkill -f notion-2api${NC}"
         echo ""
-        
-        # 测试服务
-        print_info "测试服务连接..."
-        sleep 3
-        if curl -s "http://localhost:${PORT}/" > /dev/null 2>&1; then
-            print_success "服务响应正常"
-            
-            # 显示支持的模型
-            echo ""
-            echo -e "${BLUE}📋 支持的模型：${NC}"
-            echo -e "  ${GREEN}✓${NC} claude-sonnet-4.5  ${YELLOW}(推荐)${NC}"
-            echo -e "  ${GREEN}✓${NC} gpt-5"
-            echo -e "  ${GREEN}✓${NC} claude-opus-4.1"
-            echo -e "  ${GREEN}✓${NC} gpt-4.1"
-            echo -e "  ${GREEN}✓${NC} gemini-2.5-flash"
-            echo -e "  ${GREEN}✓${NC} gemini-2.5-pro"
-        else
-            print_warning "服务可能还未完全就绪，请稍等片刻"
-        fi
+
+        # 显示支持的模型
+        echo ""
+        echo -e "${BLUE}📋 支持的模型：${NC}"
+        echo -e "  ${GREEN}✓${NC} claude-sonnet-4.5  ${YELLOW}(推荐)${NC}"
+        echo -e "  ${GREEN}✓${NC} gpt-5"
+        echo -e "  ${GREEN}✓${NC} claude-opus-4.1"
+        echo -e "  ${GREEN}✓${NC} gpt-4.1"
+        echo -e "  ${GREEN}✓${NC} gemini-2.5-flash"
+        echo -e "  ${GREEN}✓${NC} gemini-2.5-pro"
     else
         print_error "服务启动失败，查看日志: tail -f notion-2api.log"
         exit 1
