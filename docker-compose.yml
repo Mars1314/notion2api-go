@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  notion-2api-go:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: notion-2api-go
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-8004}:8004"
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./.env:/app/.env:ro
+    networks:
+      - notion-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8004/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  notion-network:
+    driver: bridge

@@ -1,0 +1,643 @@
+package providers
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"notion-2api-go/internal/config"
+	"notion-2api-go/internal/utils"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	log "github.com/sirupsen/logrus"
+)
+
+// NotionAIProvider Notion AI 提供者实现
+type NotionAIProvider struct {
+	client       *http.Client
+	apiEndpoints map[string]string
+	config       *config.Settings
+}
+
+// NewNotionAIProvider 创建新的 Notion AI 提供者
+func NewNotionAIProvider(cfg *config.Settings) (*NotionAIProvider, error) {
+	if cfg.NotionCookie == "" || cfg.NotionSpaceID == "" || cfg.NotionUserID == "" {
+		return nil, fmt.Errorf("配置错误: NOTION_COOKIE, NOTION_SPACE_ID 和 NOTION_USER_ID 必须在 .env 文件中全部设置")
+	}
+
+	provider := &NotionAIProvider{
+		client: &http.Client{
+			Timeout: time.Duration(cfg.APIRequestTimeout) * time.Second,
+		},
+		apiEndpoints: map[string]string{
+			"runInference":      "https://www.notion.so/api/v3/runInferenceTranscript",
+			"saveTransactions":  "https://www.notion.so/api/v3/saveTransactionsFanout",
+		},
+		config: cfg,
+	}
+
+	// 会话预热
+	provider.warmupSession()
+	return provider, nil
+}
+
+// warmupSession 会话预热
+func (p *NotionAIProvider) warmupSession() {
+	log.Info("正在进行会话预热 (Session Warm-up)...")
+	req, err := http.NewRequest("GET", "https://www.notion.so/", nil)
+	if err != nil {
+		log.Errorf("会话预热失败: %v", err)
+		return
+	}
+
+	headers := p.prepareHeaders()
+	delete(headers, "Accept")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		log.Errorf("会话预热失败: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	log.Info("会话预热成功。")
+}
+
+// prepareHeaders 准备请求头
+func (p *NotionAIProvider) prepareHeaders() map[string]string {
+	return map[string]string{
+		"Content-Type":                "application/json",
+		"Accept":                      "application/x-ndjson",
+		"Cookie":                      p.config.GetCookieHeader(),
+		"x-notion-space-id":           p.config.NotionSpaceID,
+		"x-notion-active-user-header": p.config.NotionUserID,
+		"x-notion-client-version":     p.config.NotionClientVersion,
+		"notion-audit-log-platform":   "web",
+		"Origin":                      "https://www.notion.so",
+		"Referer":                     "https://www.notion.so/",
+		"User-Agent":                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+	}
+}
+
+// createThread 创建对话线程
+func (p *NotionAIProvider) createThread(threadType string) (string, error) {
+	threadID := uuid.New().String()
+	payload := map[string]interface{}{
+		"requestId": uuid.New().String(),
+		"transactions": []map[string]interface{}{
+			{
+				"id":      uuid.New().String(),
+				"spaceId": p.config.NotionSpaceID,
+				"operations": []map[string]interface{}{
+					{
+						"pointer": map[string]interface{}{
+							"table":   "thread",
+							"id":      threadID,
+							"spaceId": p.config.NotionSpaceID,
+						},
+						"path":    []string{},
+						"command": "set",
+						"args": map[string]interface{}{
+							"id":               threadID,
+							"version":          1,
+							"parent_id":        p.config.NotionSpaceID,
+							"parent_table":     "space",
+							"space_id":         p.config.NotionSpaceID,
+							"created_time":     time.Now().UnixMilli(),
+							"created_by_id":    p.config.NotionUserID,
+							"created_by_table": "notion_user",
+							"messages":         []interface{}{},
+							"data":             map[string]interface{}{},
+							"alive":            true,
+							"type":             threadType,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", p.apiEndpoints["saveTransactions"], bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+
+	for key, value := range p.prepareHeaders() {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("创建对话线程失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("创建对话线程失败，状态码: %d", resp.StatusCode)
+	}
+
+	log.Infof("对话线程创建成功, Thread ID: %s", threadID)
+	return threadID, nil
+}
+
+// normalizeBlockID 规范化 Block ID
+func (p *NotionAIProvider) normalizeBlockID(blockID string) string {
+	if blockID == "" {
+		return blockID
+	}
+	b := strings.ReplaceAll(strings.TrimSpace(blockID), "-", "")
+	if len(b) == 32 && regexp.MustCompile(`^[0-9a-fA-F]{32}$`).MatchString(b) {
+		return fmt.Sprintf("%s-%s-%s-%s-%s", b[0:8], b[8:12], b[12:16], b[16:20], b[20:])
+	}
+	return blockID
+}
+
+// preparePayload 准备请求载荷
+func (p *NotionAIProvider) preparePayload(requestData map[string]interface{}, threadID, mappedModel, threadType string) map[string]interface{} {
+	// 处理 Block ID
+	var normalizedBlockID string
+	if blockID, ok := requestData["notion_block_id"].(string); ok && blockID != "" {
+		normalizedBlockID = p.normalizeBlockID(blockID)
+	} else if p.config.NotionBlockID != "" {
+		normalizedBlockID = p.normalizeBlockID(p.config.NotionBlockID)
+	}
+
+	// 准备 context
+	contextValue := map[string]interface{}{
+		"timezone":        "Asia/Shanghai",
+		"spaceId":         p.config.NotionSpaceID,
+		"userId":          p.config.NotionUserID,
+		"userEmail":       p.config.NotionUserEmail,
+		"currentDatetime": time.Now().Format(time.RFC3339),
+	}
+	if normalizedBlockID != "" {
+		contextValue["blockId"] = normalizedBlockID
+	}
+
+	// 准备 config
+	var configValue map[string]interface{}
+	if strings.HasPrefix(mappedModel, "vertex-") {
+		log.Infof("检测到 Gemini 模型 (%s)，应用特定的 config 和 context。", mappedModel)
+		contextValue["userName"] = " " + p.config.NotionUserName
+		contextValue["spaceName"] = p.config.NotionUserName + "的 Notion"
+		contextValue["spaceViewId"] = "2008eefa-d0dc-80d5-9e67-000623befd8f"
+		contextValue["surface"] = "ai_module"
+		
+		configValue = map[string]interface{}{
+			"type":                               threadType,
+			"model":                              mappedModel,
+			"useWebSearch":                       true,
+			"enableAgentAutomations":             false,
+			"enableAgentIntegrations":            false,
+			"enableBackgroundAgents":             false,
+			"enableCodegenIntegration":           false,
+			"enableCustomAgents":                 false,
+			"enableExperimentalIntegrations":     false,
+			"enableLinkedDatabases":              false,
+			"enableAgentViewVersionHistoryTool":  false,
+			"searchScopes":                       []map[string]interface{}{{"type": "everything"}},
+			"enableDatabaseAgents":               false,
+			"enableAgentComments":                false,
+			"enableAgentForms":                   false,
+			"enableAgentMakesFormulas":           false,
+			"enableUserSessionContext":           false,
+			"modelFromUser":                      true,
+			"isCustomAgent":                      false,
+		}
+	} else {
+		contextValue["userName"] = p.config.NotionUserName
+		contextValue["surface"] = "workflows"
+		
+		configValue = map[string]interface{}{
+			"type":         threadType,
+			"model":        mappedModel,
+			"useWebSearch": true,
+		}
+	}
+
+	// 构建 transcript
+	transcript := []map[string]interface{}{
+		{
+			"id":    uuid.New().String(),
+			"type":  "config",
+			"value": configValue,
+		},
+		{
+			"id":    uuid.New().String(),
+			"type":  "context",
+			"value": contextValue,
+		},
+	}
+
+	// 添加消息
+	if messages, ok := requestData["messages"].([]interface{}); ok {
+		for _, msg := range messages {
+			if msgMap, ok := msg.(map[string]interface{}); ok {
+				role, _ := msgMap["role"].(string)
+				content, _ := msgMap["content"].(string)
+				
+				if role == "user" {
+					transcript = append(transcript, map[string]interface{}{
+						"id":        uuid.New().String(),
+						"type":      "user",
+						"value":     []interface{}{[]interface{}{content}},
+						"userId":    p.config.NotionUserID,
+						"createdAt": time.Now().Format(time.RFC3339),
+					})
+				} else if role == "assistant" {
+					transcript = append(transcript, map[string]interface{}{
+						"id":   uuid.New().String(),
+						"type": "agent-inference",
+						"value": []interface{}{
+							map[string]interface{}{
+								"type":    "text",
+								"content": content,
+							},
+						},
+					})
+				}
+			}
+		}
+	}
+
+	payload := map[string]interface{}{
+		"traceId":                 uuid.New().String(),
+		"spaceId":                 p.config.NotionSpaceID,
+		"transcript":              transcript,
+		"threadId":                threadID,
+		"createThread":            false,
+		"isPartialTranscript":     true,
+		"asPatchResponse":         true,
+		"generateTitle":           true,
+		"saveAllThreadOperations": true,
+		"threadType":              threadType,
+	}
+
+	if strings.HasPrefix(mappedModel, "vertex-") {
+		log.Info("为 Gemini 请求添加 debugOverrides。")
+		payload["debugOverrides"] = map[string]interface{}{
+			"emitAgentSearchExtractedResults": true,
+			"cachedInferences":                map[string]interface{}{},
+			"annotationInferences":            map[string]interface{}{},
+			"emitInferences":                  false,
+		}
+	}
+
+	return payload
+}
+
+// cleanContent 清理响应内容
+func (p *NotionAIProvider) cleanContent(content string) string {
+	if content == "" {
+		return ""
+	}
+
+	// 移除各种标记和噪音文本
+	patterns := []string{
+		`<lang primary="[^"]*"\s*/>\n*`,
+		`<thinking>[\s\S]*?</thinking>\s*`,
+		`<thought>[\s\S]*?</thought>\s*`,
+		`(?i)^.*?Chinese whatmodel I am.*?Theyspecifically.*?requested.*?me.*?to.*?reply.*?in.*?Chinese\.\s*`,
+		`(?i)^.*?This.*?is.*?a.*?straightforward.*?question.*?about.*?my.*?identity.*?asan.*?AI.*?assistant\.\s*`,
+		`(?i)^.*?Idon't.*?need.*?to.*?use.*?any.*?tools.*?for.*?this.*?-\s*it's.*?asimple.*?informational.*?response.*?aboutwhat.*?I.*?am\.\s*`,
+		`(?i)^.*?Sincethe.*?user.*?asked.*?in.*?Chinese.*?and.*?specifically.*?requested.*?a.*?Chinese.*?response.*?I.*?should.*?respond.*?in.*?Chinese\.\s*`,
+		`(?i)^.*?What model are you.*?in Chinese and specifically requesting.*?me.*?to.*?reply.*?in.*?Chinese\.\s*`,
+		`(?i)^.*?This.*?is.*?a.*?question.*?about.*?my.*?identity.*?not requiring.*?any.*?tool.*?use.*?I.*?should.*?respond.*?directly.*?to.*?the.*?user.*?in.*?Chinese.*?as.*?requested\.\s*`,
+		`(?i)^.*?I.*?should.*?identify.*?myself.*?as.*?Notion.*?AI.*?as.*?mentioned.*?in.*?the.*?system.*?prompt.*?\s*`,
+		`(?i)^.*?I.*?should.*?not.*?make.*?specific.*?claims.*?about.*?the.*?underlying.*?model.*?architecture.*?since.*?that.*?information.*?is.*?not.*?provided.*?in.*?my.*?context\.\s*`,
+	}
+
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		content = re.ReplaceAllString(content, "")
+	}
+
+	return strings.TrimSpace(content)
+}
+
+// parseNDJSONLine 解析 NDJSON 行
+func (p *NotionAIProvider) parseNDJSONLine(line string) []map[string]interface{} {
+	results := []map[string]interface{}{}
+	
+	if strings.TrimSpace(line) == "" {
+		return results
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(line), &data); err != nil {
+		log.Warnf("解析NDJSON行失败: %v - Line: %s", err, line)
+		return results
+	}
+
+	log.Debugf("原始响应数据: %v", data)
+
+	// 格式1: Gemini 返回的 markdown-chat 事件
+	if dataType, ok := data["type"].(string); ok && dataType == "markdown-chat" {
+		if content, ok := data["value"].(string); ok && content != "" {
+			log.Info("从 'markdown-chat' 直接事件中提取到内容。")
+			results = append(results, map[string]interface{}{
+				"type":    "final",
+				"content": content,
+			})
+		}
+	}
+
+	// 格式2: Claude 和 GPT 返回的补丁流，以及 Gemini 的 patch 格式
+	if dataType, ok := data["type"].(string); ok && dataType == "patch" {
+		if v, ok := data["v"].([]interface{}); ok {
+			for _, operation := range v {
+				if op, ok := operation.(map[string]interface{}); ok {
+					opType, _ := op["o"].(string)
+					path, _ := op["p"].(string)
+					value := op["v"]
+
+					// Gemini 的完整内容 patch 格式
+					if opType == "a" && strings.HasSuffix(path, "/s/-") {
+						if valueMap, ok := value.(map[string]interface{}); ok {
+							if valueMap["type"] == "markdown-chat" {
+								if content, ok := valueMap["value"].(string); ok && content != "" {
+									log.Info("从 'patch' (Gemini-style) 中提取到完整内容。")
+									results = append(results, map[string]interface{}{
+										"type":    "final",
+										"content": content,
+									})
+								}
+							}
+						}
+					}
+
+					// Gemini 的增量内容 patch 格式
+					if opType == "x" && strings.Contains(path, "/s/") && strings.HasSuffix(path, "/value") {
+						if content, ok := value.(string); ok && content != "" {
+							log.Infof("从 'patch' (Gemini增量) 中提取到内容: %s", content)
+							results = append(results, map[string]interface{}{
+								"type":    "incremental",
+								"content": content,
+							})
+						}
+					}
+
+					// Claude 和 GPT 的增量内容 patch 格式
+					if opType == "x" && strings.Contains(path, "/value/") {
+						if content, ok := value.(string); ok && content != "" {
+							log.Infof("从 'patch' (Claude/GPT增量) 中提取到内容: %s", content)
+							results = append(results, map[string]interface{}{
+								"type":    "incremental",
+								"content": content,
+							})
+						}
+					}
+
+					// Claude 和 GPT 的完整内容 patch 格式
+					if opType == "a" && strings.HasSuffix(path, "/value/-") {
+						if valueMap, ok := value.(map[string]interface{}); ok {
+							if valueMap["type"] == "text" {
+								if content, ok := valueMap["content"].(string); ok && content != "" {
+									log.Info("从 'patch' (Claude/GPT-style) 中提取到完整内容。")
+									results = append(results, map[string]interface{}{
+										"type":    "final",
+										"content": content,
+									})
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 格式3: 处理record-map类型的数据
+	if dataType, ok := data["type"].(string); ok && dataType == "record-map" {
+		if recordMap, ok := data["recordMap"].(map[string]interface{}); ok {
+			if threadMessage, ok := recordMap["thread_message"].(map[string]interface{}); ok {
+				for _, msgData := range threadMessage {
+					if msgMap, ok := msgData.(map[string]interface{}); ok {
+						if valueData, ok := msgMap["value"].(map[string]interface{}); ok {
+							if valueValue, ok := valueData["value"].(map[string]interface{}); ok {
+								if step, ok := valueValue["step"].(map[string]interface{}); ok {
+									stepType, _ := step["type"].(string)
+									var content string
+
+									if stepType == "markdown-chat" {
+										content, _ = step["value"].(string)
+									} else if stepType == "agent-inference" {
+										if agentValues, ok := step["value"].([]interface{}); ok {
+											for _, item := range agentValues {
+												if itemMap, ok := item.(map[string]interface{}); ok {
+													if itemMap["type"] == "text" {
+														content, _ = itemMap["content"].(string)
+														break
+													}
+												}
+											}
+										}
+									}
+
+									if content != "" {
+										log.Infof("从 record-map (type: %s) 提取到最终内容。", stepType)
+										results = append(results, map[string]interface{}{
+											"type":    "final",
+											"content": content,
+										})
+										break
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return results
+}
+
+// ChatCompletion 处理聊天补全请求（支持流式和非流式）
+func (p *NotionAIProvider) ChatCompletion(c *gin.Context, requestData map[string]interface{}) error {
+	// 解析 stream 参数，默认为 true
+	stream := true
+	if streamVal, ok := requestData["stream"].(bool); ok {
+		stream = streamVal
+	}
+
+	// 获取模型
+	modelName := p.config.DefaultModel
+	if model, ok := requestData["model"].(string); ok && model != "" {
+		modelName = model
+	}
+
+	mappedModel := p.config.ModelMap[modelName]
+	if mappedModel == "" {
+		mappedModel = 
+"anthropic-sonnet-alt"
+	}
+
+	// 确定线程类型
+	threadType := "workflow"
+	if strings.HasPrefix(mappedModel, "vertex-") {
+		threadType = "markdown-chat"
+	}
+
+	// 创建线程
+	threadID, err := p.createThread(threadType)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("创建对话线程失败: %v", err),
+		})
+		return err
+	}
+
+	// 准备请求载荷
+	payload := p.preparePayload(requestData, threadID, mappedModel, threadType)
+
+	// 设置 SSE 响应头
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("Transfer-Encoding", "chunked")
+
+	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String())
+	
+	// 发送角色块
+	role := "assistant"
+	roleChunk := utils.CreateChatCompletionChunk(requestID, modelName, nil, nil, &role)
+	c.Writer.Write(utils.CreateSSEData(roleChunk))
+	c.Writer.Flush()
+
+	// 发送请求到 Notion
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		errorData := utils.CreateErrorSSE(fmt.Sprintf("序列化请求失败: %v", err))
+		c.Writer.Write(errorData)
+		c.Writer.Write(utils.DoneChunk)
+		return err
+	}
+
+	log.Infof("请求 Notion AI URL: %s", p.apiEndpoints["runInference"])
+	log.Infof("请求体: %s", string(jsonData))
+
+	req, err := http.NewRequest("POST", p.apiEndpoints["runInference"], bytes.NewBuffer(jsonData))
+	if err != nil {
+		errorData := utils.CreateErrorSSE(fmt.Sprintf("创建请求失败: %v", err))
+		c.Writer.Write(errorData)
+		c.Writer.Write(utils.DoneChunk)
+		return err
+	}
+
+	for key, value := range p.prepareHeaders() {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		errorData := utils.CreateErrorSSE(fmt.Sprintf("请求 Notion AI 失败: %v", err))
+		c.Writer.Write(errorData)
+		c.Writer.Write(utils.DoneChunk)
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		errorData := utils.CreateErrorSSE(fmt.Sprintf("Notion AI 返回错误状态码: %d", resp.StatusCode))
+		c.Writer.Write(errorData)
+		c.Writer.Write(utils.DoneChunk)
+		return fmt.Errorf("状态码: %d", resp.StatusCode)
+	}
+
+	// 处理流式响应
+	var incrementalFragments []string
+	var finalMessage string
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // 增加缓冲区大小
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		parsedResults := p.parseNDJSONLine(line)
+		for _, result := range parsedResults {
+			textType, _ := result["type"].(string)
+			content, _ := result["content"].(string)
+
+			if textType == "final" {
+				finalMessage = content
+			} else if textType == "incremental" {
+				incrementalFragments = append(incrementalFragments, content)
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		log.Errorf("读取响应流时出错: %v", err)
+	}
+
+	// 确定最终响应
+	var fullResponse string
+	if finalMessage != "" {
+		fullResponse = finalMessage
+		log.Info("成功从 record-map 或 Gemini patch/event 中提取到最终消息。")
+	} else if len(incrementalFragments) > 0 {
+		fullResponse = strings.Join(incrementalFragments, "")
+		log.Info("使用拼接所有增量片段的方式获得最终消息。")
+	}
+
+	if fullResponse != "" {
+		cleanedResponse := p.cleanContent(fullResponse)
+		log.Infof("清洗后的最终响应: %s", cleanedResponse)
+		chunk := utils.CreateChatCompletionChunk(requestID, modelName, &cleanedResponse, nil, nil)
+		c.Writer.Write(utils.CreateSSEData(chunk))
+		c.Writer.Flush()
+	} else {
+		log.Warning("警告: Notion 返回的数据流中未提取到任何有效文本。请检查您的 .env 配置是否全部正确且凭证有效。")
+	}
+
+	// 发送完成标记
+	finishReason := "stop"
+	finalChunk := utils.CreateChatCompletionChunk(requestID, modelName, nil, &finishReason, nil)
+	c.Writer.Write(utils.CreateSSEData(finalChunk))
+	c.Writer.Write(utils.DoneChunk)
+	c.Writer.Flush()
+
+	return nil
+}
+
+// GetModels 获取模型列表
+func (p *NotionAIProvider) GetModels(c *gin.Context) error {
+	models := []ModelInfo{}
+	created := time.Now().Unix()
+	
+	for _, modelName := range p.config.KnownModels {
+		models = append(models, ModelInfo{
+			ID:      modelName,
+			Object:  "model",
+			Created: created,
+			OwnedBy: "lzA6",
+		})
+	}
+
+	c.JSON(http.StatusOK, ModelResponse{
+		Object: "list",
+		Data:   models,
+	})
+	
+	return nil
+}
