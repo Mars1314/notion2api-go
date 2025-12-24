@@ -60,9 +60,12 @@ func main() {
 	// API 路由
 	api := r.Group("/v1")
 	{
-		// 聊天补全
+		// OpenAI 兼容 - 聊天补全
 		api.POST("/chat/completions", authMiddleware(cfg), chatCompletionsHandler)
-		
+
+		// Anthropic 兼容 - Messages API (Claude CLI 使用)
+		api.POST("/messages", authMiddlewareAnthropic(cfg), messagesHandler)
+
 		// 模型列表
 		api.GET("/models", authMiddleware(cfg), listModelsHandler)
 	}
@@ -75,7 +78,7 @@ func main() {
 	}
 }
 
-// authMiddleware API 认证中间件
+// authMiddleware API 认证中间件 (OpenAI 格式 Bearer Token)
 func authMiddleware(cfg *config.Settings) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if cfg.APIMasterKey != "" && cfg.APIMasterKey != "1" {
@@ -110,6 +113,43 @@ func authMiddleware(cfg *config.Settings) gin.HandlerFunc {
 	}
 }
 
+// authMiddlewareAnthropic API 认证中间件 (Anthropic 格式 x-api-key)
+func authMiddlewareAnthropic(cfg *config.Settings) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if cfg.APIMasterKey != "" && cfg.APIMasterKey != "1" {
+			// Anthropic 使用 x-api-key 头
+			apiKey := c.GetHeader("x-api-key")
+			// 也支持 Authorization: Bearer 格式
+			if apiKey == "" {
+				authorization := c.GetHeader("Authorization")
+				if strings.HasPrefix(strings.ToLower(authorization), "bearer ") {
+					apiKey = strings.TrimPrefix(authorization, "Bearer ")
+					apiKey = strings.TrimPrefix(apiKey, "bearer ")
+				}
+			}
+
+			if apiKey == "" {
+				c.JSON(401, gin.H{
+					"type":  "error",
+					"error": map[string]string{"type": "authentication_error", "message": "需要 API Key 认证"},
+				})
+				c.Abort()
+				return
+			}
+
+			if apiKey != cfg.APIMasterKey {
+				c.JSON(403, gin.H{
+					"type":  "error",
+					"error": map[string]string{"type": "authentication_error", "message": "无效的 API Key"},
+				})
+				c.Abort()
+				return
+			}
+		}
+		c.Next()
+	}
+}
+
 // chatCompletionsHandler 处理聊天补全请求
 func chatCompletionsHandler(c *gin.Context) {
 	var requestData map[string]interface{}
@@ -134,4 +174,85 @@ func listModelsHandler(c *gin.Context) {
 		})
 		return
 	}
+}
+
+// messagesHandler 处理 Anthropic Messages API 请求 (Claude CLI 使用)
+func messagesHandler(c *gin.Context) {
+	var requestData map[string]interface{}
+	if err := c.ShouldBindJSON(&requestData); err != nil {
+		c.JSON(400, gin.H{
+			"type":  "error",
+			"error": map[string]string{"type": "invalid_request_error", "message": fmt.Sprintf("无效的请求数据: %v", err)},
+		})
+		return
+	}
+
+	// 转换 Anthropic 格式到 OpenAI 格式
+	convertedRequest := convertAnthropicToOpenAI(requestData)
+
+	if err := provider.ChatCompletionAnthropic(c, convertedRequest, requestData); err != nil {
+		log.Errorf("处理 Anthropic 消息请求时发生错误: %v", err)
+	}
+}
+
+// convertAnthropicToOpenAI 将 Anthropic 请求格式转换为 OpenAI 格式
+func convertAnthropicToOpenAI(anthropicReq map[string]interface{}) map[string]interface{} {
+	openaiReq := make(map[string]interface{})
+
+	// 复制模型
+	if model, ok := anthropicReq["model"].(string); ok {
+		openaiReq["model"] = model
+	}
+
+	// 转换消息格式
+	var messages []interface{}
+
+	// 转换 messages
+	if anthropicMessages, ok := anthropicReq["messages"].([]interface{}); ok {
+		for _, msg := range anthropicMessages {
+			if msgMap, ok := msg.(map[string]interface{}); ok {
+				role, _ := msgMap["role"].(string)
+				content := ""
+
+				// Anthropic content 可能是字符串或数组
+				switch c := msgMap["content"].(type) {
+				case string:
+					content = c
+				case []interface{}:
+					// 处理 content blocks
+					for _, block := range c {
+						if blockMap, ok := block.(map[string]interface{}); ok {
+							if blockMap["type"] == "text" {
+								if text, ok := blockMap["text"].(string); ok {
+									content += text
+								}
+							}
+						}
+					}
+				}
+
+				// 清理控制字符
+				content = strings.ReplaceAll(content, "\x01", "")
+
+				messages = append(messages, map[string]interface{}{
+					"role":    role,
+					"content": content,
+				})
+			}
+		}
+	}
+
+	openaiReq["messages"] = messages
+
+	// 转换 stream
+	if stream, ok := anthropicReq["stream"].(bool); ok {
+		openaiReq["stream"] = stream
+	}
+
+	// 转换 max_tokens
+	if maxTokens, ok := anthropicReq["max_tokens"].(float64); ok {
+		openaiReq["max_tokens"] = int(maxTokens)
+	}
+
+	return openaiReq
 }

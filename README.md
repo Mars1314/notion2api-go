@@ -18,23 +18,20 @@
 
 ## 📋 支持的模型
 
-### ✅ 可用模型（4/6）- 成功率 67%
+| 模型名称 | Notion 内部代号 | 说明 |
+|---------|----------------|------|
+| `claude-sonnet-4` | anthropic-sonnet-4 | Claude Sonnet 4（推荐） |
+| `claude-opus-4` | anthropic-opus-4 | Claude Opus 4 |
+| `gpt-4o` | openai-gpt-4o | GPT-4o |
+| `gpt-4o-mini` | openai-gpt-4o-mini | GPT-4o Mini |
+| `o1` | openai-o1 | OpenAI o1 推理模型 |
+| `o1-mini` | openai-o1-mini | OpenAI o1 Mini |
+| `o3-mini` | openai-o3-mini | OpenAI o3 Mini |
+| `gemini-2.0-flash` | vertex-gemini-2.0-flash | Gemini 2.0 Flash |
+| `gemini-2.0-flash-thinking` | vertex-gemini-2.0-flash-thinking | Gemini 2.0 Flash Thinking |
+| `gemini-1.5-pro` | vertex-gemini-1.5-pro | Gemini 1.5 Pro |
 
-| 模型名称 | 状态 | 说明 | 推荐场景 |
-|---------|------|------|---------|
-| `claude-sonnet-4.5` | ✅ 可用 | Claude Sonnet 4.5 | 通用任务（**强烈推荐**） |
-| `gpt-5` | ✅ 可用 | GPT-5 | 高级推理 |
-| `claude-opus-4.1` | ✅ 可用 | Claude Opus 4.1 | 复杂任务 |
-| `gpt-4.1` | ✅ 可用 | GPT-4.1 | 快速响应 |
-
-### ⚠️ 暂不可用（2/6）
-
-| 模型名称 | 状态 | 说明 |
-|---------|------|------|
-| `gemini-2.5-flash` | ⚠️ 不可用 | Notion AI 返回空响应 |
-| `gemini-2.5-pro` | ⚠️ 不可用 | Notion AI 返回空响应 |
-
-> **注意**: Gemini 系列模型目前从 Notion AI 获取响应时返回空内容，可能是 Notion AI 对这些模型的支持问题。建议使用 Claude 或 GPT 系列模型。
+> **注意**: 模型可用性取决于您的 Notion 账户权限和 Notion AI 的当前支持情况。
 
 ## 🚀 快速开始
 
@@ -97,7 +94,7 @@ go build -o notion-2api main.go
 | `NOTION_USER_NAME` | - | Notion 用户名称 | 否 |
 | `NOTION_USER_EMAIL` | - | Notion 用户邮箱 | 否 |
 | `NOTION_BLOCK_ID` | - | Notion 块 ID（可选） | 否 |
-| `DEFAULT_MODEL` | claude-sonnet-4.5 | 默认使用的模型 | 否 |
+| `DEFAULT_MODEL` | claude-sonnet-4 | 默认使用的模型 | 否 |
 | `API_REQUEST_TIMEOUT` | 180 | API 请求超时时间（秒） | 否 |
 
 ### 获取 Notion 凭证
@@ -143,7 +140,7 @@ curl -X POST http://localhost:8004/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-sonnet-4.5",
+    "model": "claude-sonnet-4",
     "messages": [
       {"role": "user", "content": "你好，介绍一下你自己"}
     ],
@@ -158,7 +155,7 @@ curl -X POST http://localhost:8004/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-sonnet-4.5",
+    "model": "claude-sonnet-4",
     "messages": [
       {"role": "user", "content": "什么是量子计算？"}
     ],
@@ -179,7 +176,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="claude-sonnet-4.5",
+    model="claude-sonnet-4",
     messages=[
         {"role": "user", "content": "你好"}
     ],
@@ -202,7 +199,7 @@ const client = new OpenAI({
 });
 
 const response = await client.chat.completions.create({
-    model: 'claude-sonnet-4.5',
+    model: 'claude-sonnet-4',
     messages: [
         { role: 'user', content: '你好' }
     ],
@@ -329,31 +326,24 @@ Notion Cookie 会定期过期，需要重新获取并更新 `.env` 文件中的 
 - **响应时间**：平均 5-8 秒（取决于 Notion API 和模型）
 - **并发支持**：支持多用户同时访问
 - **稳定性**：7x24 小时运行
-- **模型成功率**：67% (4/6 模型可用)
+- **模型成功率**：取决于 Notion AI 当前支持
 
 ## ✅ 测试结果
 
-最新测试时间：2025-10-13
+最新更新时间：2024-12-24
 
 | 测试项 | 状态 | 说明 |
 |--------|------|------|
 | 服务启动 | ✅ 通过 | 服务正常启动在端口 8004 |
 | 健康检查 | ✅ 通过 | 根路径响应正常 |
-| 模型列表 | ✅ 通过 | 成功返回 6 个模型 |
-| claude-sonnet-4.5 | ✅ 通过 | 流式响应正常 |
-| gpt-5 | ✅ 通过 | 流式响应正常 |
-| claude-opus-4.1 | ✅ 通过 | 流式响应正常 |
-| gpt-4.1 | ✅ 通过 | 流式响应正常 |
-| gemini-2.5-flash | ⚠️ 失败 | 返回空响应 |
-| gemini-2.5-pro | ⚠️ 失败 | 返回空响应 |
+| 模型列表 | ✅ 通过 | 成功返回 10 个模型 |
 
 ### 推荐使用模型
 
-基于测试结果，推荐使用以下模型：
-1. **claude-sonnet-4.5** - 最稳定，响应质量高
-2. **gpt-5** - 高级推理能力强
-3. **claude-opus-4.1** - 适合复杂任务
-4. **gpt-4.1** - 快速响应
+1. **claude-sonnet-4** - 通用任务，响应质量高
+2. **gpt-4o** - 快速响应，性价比高
+3. **claude-opus-4** - 适合复杂任务
+4. **o1** - 高级推理能力
 
 ## 🔒 安全建议
 

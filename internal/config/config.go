@@ -50,28 +50,45 @@ func LoadConfig() *Settings {
 		NotionUserName:  getEnv("NOTION_USER_NAME", ""),
 		NotionUserEmail: getEnv("NOTION_USER_EMAIL", ""),
 		NotionBlockID:   getEnv("NOTION_BLOCK_ID", ""),
-		NotionClientVersion: getEnv("NOTION_CLIENT_VERSION", "23.13.20251011.2037"),
+		NotionClientVersion: getEnv("NOTION_CLIENT_VERSION", "23.13.20251224"),
 
 		APIRequestTimeout: getEnvAsInt("API_REQUEST_TIMEOUT", 180),
 		NginxPort:        getEnvAsInt("NGINX_PORT", 8004),
 		DefaultModel:     getEnv("DEFAULT_MODEL", "claude-sonnet-4.5"),
 
+		// Notion AI 最新模型列表 (2024年12月)
 		KnownModels: []string{
 			"claude-sonnet-4.5",
-			"gpt-5",
-			"claude-opus-4.1",
-			"gpt-4.1",
-			"gemini-2.5-flash",
-			"gemini-2.5-pro",
+			"claude-opus-4.5",
+			"gemini-3-pro",
+			"gpt-5.2",
+			"gpt-4o",
+			"gpt-4o-mini",
+			"o1",
+			"o1-mini",
+			"gemini-2.0-flash",
+			"gemini-1.5-pro",
 		},
 
+		// 模型映射到 Notion 内部代号
 		ModelMap: map[string]string{
-			"claude-sonnet-4.5":  "anthropic-sonnet-alt",
-			"gpt-5":              "openai-turbo",
-			"claude-opus-4.1":    "anthropic-opus-4.1",
-			"gpt-4.1":            "openai-gpt-4.1",
-			"gemini-2.5-flash":   "vertex-gemini-2.5-flash",
-			"gemini-2.5-pro":     "vertex-gemini-2.5-pro",
+			// 新测试版模型
+			"claude-sonnet-4.5":         "anthropic-sonnet-alt-thinking",
+			"claude-opus-4.5":           "apple-danish",
+			"gemini-3-pro":              "gateau-roule",
+			"gpt-5.2":                   "oatmeal-cookie",
+			// 标准模型
+			"gpt-4o":                    "openai-gpt-4o",
+			"gpt-4o-mini":               "openai-gpt-4o-mini",
+			"o1":                        "openai-o1",
+			"o1-mini":                   "openai-o1-mini",
+			"gemini-2.0-flash":          "vertex-gemini-2.0-flash",
+			"gemini-1.5-pro":            "vertex-gemini-1.5-pro",
+			// Claude CLI 兼容别名
+			"claude-opus-4-5-20251101":   "apple-danish",
+			"claude-sonnet-4-5-20241022": "anthropic-sonnet-alt-thinking",
+			"opus":                       "apple-danish",
+			"sonnet":                     "anthropic-sonnet-alt-thinking",
 		},
 	}
 

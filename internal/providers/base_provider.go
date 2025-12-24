@@ -4,9 +4,12 @@ import "github.com/gin-gonic/gin"
 
 // BaseProvider 定义了所有 AI Provider 必须实现的接口
 type BaseProvider interface {
-	// ChatCompletion 处理聊天补全请求
+	// ChatCompletion 处理聊天补全请求 (OpenAI 格式)
 	ChatCompletion(c *gin.Context, requestData map[string]interface{}) error
-	
+
+	// ChatCompletionAnthropic 处理聊天补全请求 (Anthropic 格式响应)
+	ChatCompletionAnthropic(c *gin.Context, convertedData map[string]interface{}, originalData map[string]interface{}) error
+
 	// GetModels 获取可用模型列表
 	GetModels(c *gin.Context) error
 }
